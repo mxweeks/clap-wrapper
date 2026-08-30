@@ -772,6 +772,27 @@ class WrapAsAUV2 : public ausdk::AUBase,
   std::vector<AudioPortCache> _inputPortCache;
   std::vector<AudioPortCache> _outputPortCache;
 
+  // clap.audio-ports-config, snapshotted at PostConstructor for the same
+  // reason as the port caches: a host asks about channel layouts while the
+  // plugin is active, and CLAP only permits scanning while it is deactivated.
+  //
+  // An AU publishes the layouts it accepts through AUChannelInfo, and a host
+  // that cannot find its channel strip's layout there does not instantiate
+  // the unit at all -- Logic refuses the insert on a mono track with no error
+  // anywhere. A plugin with one stereo input port therefore looks stereo-only
+  // however many configurations it actually has, unless they are read here.
+  struct AudioPortsConfigCache
+  {
+    clap_id id;
+    uint32_t mainInputChannels;   // 0 when the configuration has no main input
+    uint32_t mainOutputChannels;  // 0 when it has no main output
+  };
+  std::vector<AudioPortsConfigCache> _portsConfigCache;
+
+  /** Chooses the configuration matching the AU's current stream formats and
+      tells the CLAP about it. Called from Initialize, while deactivated. */
+  bool selectPortsConfigForCurrentFormats();
+
   uint32_t _midi_preferred_dialect = 0;
   uint32_t _midi_supported_dialects = 0;
   bool _midi_wants_midi_input = false;  // takes any input
