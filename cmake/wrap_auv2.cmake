@@ -282,6 +282,27 @@ function(target_add_auv2_wrapper)
     add_custom_command(TARGET ${AUV2_TARGET} PRE_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy ${bhtgoutdir}/auv2_Info.plist $<TARGET_FILE_DIR:${AUV2_TARGET}>/../Info.plist)
 
+    # ...and again afterwards, on every generator but Xcode.
+    #
+    # CMake writes its own Info.plist into a MACOSX_BUNDLE target as part of
+    # linking, from MACOSX_BUNDLE_* properties. On a Makefile or Ninja build
+    # that happens *after* the PRE_BUILD command above, so the generated plist
+    # is overwritten by a default one carrying no AudioComponents array at
+    # all -- and a component bundle with no AudioComponents does not register.
+    # The build is green, the bundle is present, `auval` reports "didn't find
+    # the component", and nothing anywhere says why.
+    #
+    # An incremental build hides it, because relinking is what clobbers the
+    # file: the symptom appears on the clean build, which is the one that
+    # ships.
+    #
+    # Not on Xcode, where POST_BUILD would land after code signing and
+    # invalidate the signature -- which is what the PRE_BUILD above is for.
+    if(NOT CMAKE_GENERATOR STREQUAL "Xcode")
+        add_custom_command(TARGET ${AUV2_TARGET} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy ${bhtgoutdir}/auv2_Info.plist $<TARGET_FILE_DIR:${AUV2_TARGET}>/../Info.plist)
+    endif()
+
     # XCode needs a special extra flag
     set_target_properties(${AUV2_TARGET} PROPERTIES XCODE_ATTRIBUTE_PRODUCT_BUNDLE_IDENTIFIER "${AUV2_BUNDLE_IDENTIFIER}.component")
 

@@ -62,6 +62,17 @@ class IHost
   virtual void latency_changed() = 0;
   virtual void tail_changed() = 0;
 
+  /** The plugin's note names have changed -- a different instrument loaded,
+      or a key remapped.
+
+      Defaulted rather than pure, in keeping with the note above: only the
+      AUv2 has somewhere to put this today (kMusicDeviceProperty_MIDIXMLNames),
+      and making it pure would mean editing every wrapper to add an empty
+      override. */
+  virtual void note_name_changed()
+  {
+  }
+
   virtual bool gui_can_resize() = 0;
   virtual bool gui_request_resize(uint32_t width, uint32_t height) = 0;
   virtual bool gui_request_show() = 0;
@@ -112,6 +123,7 @@ struct ClapPluginExtensions
   const clap_plugin_audio_ports_config_t *_audio_ports_config = nullptr;
   const clap_plugin_gui_t *_gui = nullptr;
   const clap_plugin_note_ports_t *_noteports = nullptr;
+  const clap_plugin_note_name_t *_notename = nullptr;
   const clap_plugin_latency_t *_latency = nullptr;
   const clap_plugin_render_t *_render = nullptr;
   const clap_plugin_tail_t *_tail = nullptr;
@@ -212,6 +224,9 @@ class Plugin
 
   // tail
   void tail_changed();
+
+  // note name
+  void note_name_changed();
 
   // context_menu
   bool context_menu_populate(const clap_context_menu_target_t *target,

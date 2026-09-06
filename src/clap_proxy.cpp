@@ -122,6 +122,9 @@ const clap_host_latency latency = {[](const clap_host_t *host) -> void
 
 const clap_host_state_t state = {[](const clap_host_t *host) -> void { self(host)->mark_dirty(); }};
 
+const clap_host_note_name_t notename = {[](const clap_host_t *host) -> void
+                                        { self(host)->note_name_changed(); }};
+
 const clap_host_context_menu_t context_menu = {
     /* populate */
     [](const clap_host_t *host, const clap_context_menu_target_t *target,
@@ -243,6 +246,7 @@ void Plugin::connectClap(const clap_plugin_t *clap)
   if (!_ext._audio_ports_activation)
     getExtension(_plugin, _ext._audio_ports_activation, CLAP_EXT_AUDIO_PORTS_ACTIVATION_COMPAT);
   getExtension(_plugin, _ext._noteports, CLAP_EXT_NOTE_PORTS);
+  getExtension(_plugin, _ext._notename, CLAP_EXT_NOTE_NAME);
   getExtension(_plugin, _ext._latency, CLAP_EXT_LATENCY);
   getExtension(_plugin, _ext._render, CLAP_EXT_RENDER);
   getExtension(_plugin, _ext._tail, CLAP_EXT_TAIL);
@@ -424,6 +428,11 @@ void Plugin::mark_dirty()
   _parentHost->mark_dirty();
 }
 
+void Plugin::note_name_changed()
+{
+  _parentHost->note_name_changed();
+}
+
 void Plugin::latency_changed()
 {
   _parentHost->latency_changed();
@@ -565,6 +574,7 @@ const void *Plugin::clapExtension(const clap_host * /*host*/, const char *extens
   if (!strcmp(extension, CLAP_EXT_LATENCY)) return &HostExt::latency;
   if (!strcmp(extension, CLAP_EXT_TAIL)) return &HostExt::tail;
   if (!strcmp(extension, CLAP_EXT_STATE)) return &HostExt::state;
+  if (!strcmp(extension, CLAP_EXT_NOTE_NAME)) return &HostExt::notename;
   if (!strcmp(extension, CLAP_EXT_CONTEXT_MENU)) return &HostExt::context_menu;
 
 #if LIN

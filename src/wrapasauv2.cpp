@@ -3,6 +3,11 @@
 #include <set>
 #include <limits>
 #include <cassert>
+#include <array>
+#include <filesystem>
+#include <fstream>
+#include <sstream>
+#include <system_error>
 #include <Block.h>
 
 extern bool fillAudioUnitCocoaView(AudioUnitCocoaViewInfo *viewInfo, std::shared_ptr<Clap::Plugin>);
@@ -712,6 +717,145 @@ Float64 WrapAsAUV2::GetTailTime()
   return 0.0;
 }
 
+namespace
+{
+// XML has five of these and a note name is author-supplied text, so it gets
+// escaped rather than trusted. A plugin that calls an instrument "Tom & Rim"
+// would otherwise produce a document Logic silently refuses to parse -- and
+// the symptom is note names that never appear, which looks exactly like the
+// property not being implemented.
+std::string xmlEscape(const char *in)
+{
+  std::string out;
+  for (const char *p = in; p && *p; ++p)
+  {
+    switch (*p)
+    {
+      case '&': out += "&amp;"; break;
+      case '<': out += "&lt;"; break;
+      case '>': out += "&gt;"; break;
+      case '"': out += "&quot;"; break;
+      case '\'': out += "&apos;"; break;
+      default: out += *p; break;
+    }
+  }
+  return out;
+}
+}  // namespace
+
+/**
+    Publish clap.note-name as a MIDINameDocument.
+
+    The two describe the same thing in incompatible shapes. CLAP hands back a
+    flat list of (port, channel, key, name); the MMA document is a tree of
+    device modes, channel name sets and note name lists, and Logic reaches the
+    names through `UsesNoteNameList`. So the mapping is: everything with
+    `channel == -1` goes into one list that every channel uses, and anything
+    named per-channel gets its own.
+
+    Only `port == -1` or port 0 is published. An AudioUnit has one MIDI input,
+    so a name on a second note port has nowhere to go, and inventing a channel
+    for it would put the label on a key that does not sound.
+*/
+bool WrapAsAUV2::writeMIDINameDocument()
+{
+  if (!_plugin || !_plugin->_ext._notename) return false;
+
+  const auto *ext = _plugin->_ext._notename;
+  const auto count = ext->count(_plugin->_plugin);
+  if (count == 0) return false;
+
+  // Per channel, so that a plugin naming keys differently on channel 10 is
+  // published as it meant it. Index 16 is the "every channel" list.
+  std::array<std::string, 17> notes;
+
+  for (uint32_t i = 0; i < count; ++i)
+  {
+    clap_note_name_t n{};
+    if (!ext->get(_plugin->_plugin, i, &n)) continue;
+    if (n.port > 0) continue;
+    if (n.key < 0 || n.key > 127) continue;
+    if (n.channel > 15) continue;
+
+    const auto slot = (n.channel < 0) ? 16 : static_cast<size_t>(n.channel);
+    notes[slot] += "      <Note Number=\"" + std::to_string(n.key) + "\" Name=\"" +
+                   xmlEscape(n.name) + "\"/>\n";
+  }
+
+  if (notes[16].empty())
+  {
+    bool any = false;
+    for (size_t c = 0; c < 16; ++c) any = any || !notes[c].empty();
+    if (!any) return false;
+  }
+
+  const auto model = xmlEscape(_clapname.c_str());
+
+  std::string doc =
+      "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+      "<!DOCTYPE MIDINameDocument PUBLIC \"-//MIDI Manufacturers Association//DTD "
+      "MIDINameDocument 1.0//EN\" \"http://www.midi.org/dtds/MIDINameDocument10.dtd\">\n"
+      "<MIDINameDocument>\n"
+      "  <Author>clap-wrapper</Author>\n"
+      "  <MasterDeviceNames>\n"
+      "    <Manufacturer>" +
+      model +
+      "</Manufacturer>\n"
+      "    <Model>" +
+      model +
+      "</Model>\n"
+      "    <CustomDeviceMode Name=\"Default\">\n"
+      "      <ChannelNameSetAssignments>\n";
+
+  for (int c = 1; c <= 16; ++c)
+    doc += "        <ChannelNameSetAssign Channel=\"" + std::to_string(c) +
+           "\" NameSet=\"Names\"/>\n";
+
+  doc +=
+      "      </ChannelNameSetAssignments>\n"
+      "    </CustomDeviceMode>\n"
+      "    <ChannelNameSet Name=\"Names\">\n"
+      "      <AvailableForChannels>\n";
+
+  for (int c = 1; c <= 16; ++c)
+    doc += "        <AvailableChannel Channel=\"" + std::to_string(c) + "\" Available=\"true\"/>\n";
+
+  doc +=
+      "      </AvailableForChannels>\n"
+      "      <PatchBank Name=\"Bank\">\n"
+      "        <PatchNameList Name=\"Patches\"/>\n"
+      "        <UsesNoteNameList Name=\"Names\"/>\n"
+      "      </PatchBank>\n"
+      "    </ChannelNameSet>\n"
+      "    <NoteNameList Name=\"Names\">\n";
+
+  doc += notes[16];
+  for (size_t c = 0; c < 16; ++c) doc += notes[c];
+
+  doc +=
+      "    </NoteNameList>\n"
+      "  </MasterDeviceNames>\n"
+      "</MIDINameDocument>\n";
+
+  if (_midiNamesPath.empty())
+  {
+    std::error_code ec;
+    auto dir = std::filesystem::temp_directory_path(ec);
+    if (ec) return false;
+
+    // One file per instance. Two of these on two tracks can name different
+    // keys, and a shared path would let whichever asked last answer for both.
+    std::ostringstream name;
+    name << "clap-wrapper-midinames-" << static_cast<const void *>(this) << ".middnam";
+    _midiNamesPath = (dir / name.str()).string();
+  }
+
+  std::ofstream out(_midiNamesPath, std::ios::binary | std::ios::trunc);
+  if (!out) return false;
+  out << doc;
+  return out.good();
+}
+
 OSStatus WrapAsAUV2::GetPropertyInfo(AudioUnitPropertyID inID, AudioUnitScope inScope,
                                      AudioUnitElement inElement, UInt32 &outDataSize, bool &outWritable)
 {
@@ -729,6 +873,20 @@ OSStatus WrapAsAUV2::GetPropertyInfo(AudioUnitPropertyID inID, AudioUnitScope in
         break;
       case kMusicDeviceProperty_InstrumentCount:
         outDataSize = sizeof(UInt32);
+        outWritable = false;
+        return noErr;
+        break;
+      case kMusicDeviceProperty_MIDIXMLNames:
+        // Only an instrument has keys to name, and only a plugin that
+        // declares clap.note-name has anything to say about them. Answering
+        // this with an empty document would be worse than not answering: a
+        // host that gets one stops printing the note numbers it was printing
+        // before.
+        if (_autype != AUV2_Type::aumu_musicdevice) return kAudioUnitErr_InvalidProperty;
+        if (!_plugin || !_plugin->_ext._notename) return kAudioUnitErr_InvalidProperty;
+        if (_plugin->_ext._notename->count(_plugin->_plugin) == 0)
+          return kAudioUnitErr_InvalidProperty;
+        outDataSize = sizeof(CFURLRef);
         outWritable = false;
         return noErr;
         break;
@@ -834,6 +992,23 @@ OSStatus WrapAsAUV2::GetProperty(AudioUnitPropertyID inID, AudioUnitScope inScop
         if (_autype == AUV2_Type::aumu_musicdevice) return noErr;
         return kAudioUnitErr_InvalidProperty;
         // return  GetInstrumentCount(*static_cast<UInt32*>(outData));
+
+      case kMusicDeviceProperty_MIDIXMLNames:
+      {
+        if (_autype != AUV2_Type::aumu_musicdevice) return kAudioUnitErr_InvalidProperty;
+        if (!writeMIDINameDocument()) return kAudioUnitErr_InvalidProperty;
+
+        auto path = CFStringCreateWithCString(kCFAllocatorDefault, _midiNamesPath.c_str(),
+                                              kCFStringEncodingUTF8);
+        if (!path) return kAudioUnitErr_InvalidProperty;
+
+        // The caller owns the returned CFURLRef -- AudioUnitGetProperty's
+        // contract for a CF type is that it comes back retained.
+        *static_cast<CFURLRef *>(outData) =
+            CFURLCreateWithFileSystemPath(kCFAllocatorDefault, path, kCFURLPOSIXPathStyle, false);
+        CFRelease(path);
+        return noErr;
+      }
 
       case kAudioUnitProperty_BypassEffect:
         *static_cast<UInt32 *>(outData) = (IsBypassEffect() ? 1 : 0);  // NOLINT
@@ -1065,6 +1240,12 @@ void WrapAsAUV2::latency_changed()
 void WrapAsAUV2::tail_changed()
 {
   PropertyChanged(kAudioUnitProperty_TailTime, kAudioUnitScope_Global, 0);
+}
+
+void WrapAsAUV2::note_name_changed()
+{
+  if (_autype != AUV2_Type::aumu_musicdevice) return;
+  PropertyChanged(kMusicDeviceProperty_MIDIXMLNames, kAudioUnitScope_Global, 0);
 }
 
 void WrapAsAUV2::addAudioBusFrom(int bus, const clap_audio_port_info_t *info, bool is_input)

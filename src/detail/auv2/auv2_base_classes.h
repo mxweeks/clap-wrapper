@@ -359,6 +359,20 @@ class WrapAsAUV2 : public ausdk::AUBase,
 
   bool initializeClapDesc();
 
+  /**
+      Where the MIDI name document for kMusicDeviceProperty_MIDIXMLNames was
+      last written, or empty.
+
+      The property's value type is a CFURLRef pointing at a *file*, so
+      publishing note names means having one on disk. It is rewritten on every
+      query rather than cached by content: a CLAP plugin's note names depend
+      on its state -- which drum machine is loaded, which key each trigger is
+      patched to -- so the answer that was right when the plugin was
+      instantiated need not be right when the host asks.
+  */
+  std::string _midiNamesPath;
+  bool writeMIDINameDocument();
+
  public:
   // the very very reduced state machine
   OSStatus Initialize() override;
@@ -612,6 +626,16 @@ class WrapAsAUV2 : public ausdk::AUBase,
   void latency_changed() override;
 
   void tail_changed() override;
+
+  /** Tells the host the MIDI name document is stale.
+
+      Logic asks for kMusicDeviceProperty_MIDIXMLNames when it instantiates
+      the unit, which for a plugin whose names depend on its state is the one
+      moment it has least to say -- no preset loaded yet, nothing named. So
+      the notification is the load-bearing half: without it the piano roll
+      shows numbers for the whole session however many drum machines get
+      loaded afterwards. */
+  void note_name_changed() override;
 
   bool gui_can_resize() override
   {
