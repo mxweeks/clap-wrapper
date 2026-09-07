@@ -822,10 +822,19 @@ bool WrapAsAUV2::writeMIDINameDocument()
 
   doc +=
       "      </AvailableForChannels>\n"
-      "      <PatchBank Name=\"Bank\">\n"
-      "        <PatchNameList Name=\"Patches\"/>\n"
-      "        <UsesNoteNameList Name=\"Names\"/>\n"
-      "      </PatchBank>\n"
+      // UsesNoteNameList is a child of ChannelNameSet, not of PatchBank: the
+      // DTD lets a bank carry a patch list and nothing else. Nested inside one
+      // -- beside an empty PatchNameList, so there was no patch to hang the
+      // names on either -- the document does not validate, and a host that
+      // checks it against the DTD drops every name in it. Logic is such a
+      // host, which is what this cost: eleven named drum keys written
+      // correctly, emitted in a document, and silently ignored.
+      //
+      // The bank is gone rather than filled in. A plugin that publishes
+      // clap.note-name is saying what its keys are called; it is not claiming
+      // to have MIDI patches, and an empty bank was only ever there to hold
+      // the element that has now moved out of it.
+      "      <UsesNoteNameList Name=\"Names\"/>\n"
       "    </ChannelNameSet>\n"
       "    <NoteNameList Name=\"Names\">\n";
 
